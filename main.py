@@ -115,6 +115,9 @@ class TimeControl:
             w = t - self.time
             if w > 0:
                 time.sleep(w)
+        else:
+            self.time = time.time()
+
 
 
 class ScreenObject:
@@ -122,6 +125,7 @@ class ScreenObject:
     WINDOW_H = 1080
     FULLSCREEN = False
     anchor = None
+    control = threading.RLock()
 
     def __init__(self, name, static=True, con=0.8, scale=1.0, num=0, ao=None):
         self.name = name
@@ -214,15 +218,15 @@ class ScreenObject:
             trgt = self.trgt;
             if ScreenObject.FULLSCREEN:
                 trgt = tuple([i*2 for i in trgt])
-            pyautogui.click(trgt)
+            with ScreenObject.control:
+                pyautogui.click(trgt)
             print("click: ", self.name[:len(self.name) - 4])
 
 
 class ScreenIndicator(ScreenObject):
     MASK_KEY = (0, 255, 0)
-    TREASHOLD = 30
 
-    def __init__(self, name, mask, key, scale=1.0, num=0):
+    def __init__(self, name, mask, key, scale=1.0, num=0, th=30):
         ScreenObject.__init__(self, name, static=True, con=0.8, scale=scale, num=num)
         self.mask = []
         self.mask_pos = []
@@ -249,6 +253,7 @@ class ScreenIndicator(ScreenObject):
         self.lock = threading.Lock()
         # print(name, self.off)
         self.key = key
+        self.th = th
 
 
     def scanMask(self):
@@ -274,9 +279,9 @@ class ScreenIndicator(ScreenObject):
             for pos in mask:  # for every pixel:
                 pix = im.getpixel(pos)
                 count += 1
-                if abs(pix[0] - key[0]) < ScreenIndicator.TREASHOLD and \
-                        abs(pix[1] - key[1]) < ScreenIndicator.TREASHOLD and \
-                        abs(pix[2] - key[2]) < ScreenIndicator.TREASHOLD:
+                if abs(pix[0] - key[0]) < self.th and \
+                        abs(pix[1] - key[1]) < self.th and \
+                        abs(pix[2] - key[2]) < self.th:
                     summ += 1
 
             cur.append(summ / (count + 1))
@@ -285,6 +290,9 @@ class ScreenIndicator(ScreenObject):
         return cur
 
     def update(self):
+
+        with ScreenObject.control:
+            pass
 
         if not self.reg:
             ScreenObject.update(self)
@@ -304,7 +312,8 @@ class ScreenIndicator(ScreenObject):
         else:
             if self.reg:
                 print("blind click: ", self.name[:len(self.name) - 4])
-                pyautogui.click(self.reg[0] + self.reg[2] / 2, self.reg[1] + self.reg[3] / 2)
+                with ScreenObject.control:
+                    pyautogui.click(self.reg[0] + self.reg[2] / 2, self.reg[1] + self.reg[3] / 2)
 
 
 class Botton():
@@ -330,12 +339,12 @@ class Botton():
 
 class ModuleBotton(ScreenIndicator, threading.Thread, Botton, TimeControl):
     MAX_VALS = 5
-    TIME_PACE = 0.5
+    TIME_PACE = 2
 
     def __init__(self, name, mask, scale=1.0, num=0):
         threading.Thread.__init__(self)
         Botton.__init__(self)
-        ScreenIndicator.__init__(self, name, (mask,), key=((215, 252, 239),), scale=scale, num=num)
+        ScreenIndicator.__init__(self, name, (mask,), key=((215, 252, 239),), scale=scale, num=num, th=10)
         TimeControl.__init__(self)
         self.vals = Averager(max_count=self.MAX_VALS)
         self.work = True
@@ -350,26 +359,32 @@ class ModuleBotton(ScreenIndicator, threading.Thread, Botton, TimeControl):
         if self.reg == ():
             return
 
+        with ScreenObject.control:
+            pass
+
         with self.lock:
             if self.vals.count() < self.MAX_VALS:
                 return
-
+            #if self.name == "ab_btn_2.png":
+            #    print("switch", self.name, self.vals.list)
             cnt = self.vals.unique()
 
             if self.expectedState == "active":
                 if cnt > 1:
                     return
             else:
-                if cnt < 3:
+                if cnt < self.MAX_VALS:
                     return
-
+            #print("switch", self.name, self.vals.list)
             self.switchState()
             return
 
         return
 
     def update(self):
+
         ScreenIndicator.update(self)
+
         if self.reg:
             val = self.getValue()
 
@@ -380,7 +395,7 @@ class ModuleBotton(ScreenIndicator, threading.Thread, Botton, TimeControl):
     def run(self):
         while self.work:
             self.update()
-            self.wait(self.TIME_PACE if self.expectedState == "active" else 1)
+            self.wait(self.TIME_PACE)
 
 
 class DroneModule(ScreenObject, Botton, threading.Thread, TimeControl):
@@ -404,6 +419,9 @@ class DroneModule(ScreenObject, Botton, threading.Thread, TimeControl):
         self.join()
 
     def update(self):
+
+        with ScreenObject.control:
+            pass
 
         if self.reg:
             self.attack.update()
@@ -486,20 +504,20 @@ class Overview:
     def SwitchMode(self, mode):
         if mode != "none":
             while self.GetMode() != mode:
+                with ScreenObject.control:
+                    while self.State() != "open":
+                        self.ov_btn.click()
+                        time.sleep(0.5)
 
-                while self.State() != "open":
-                    self.ov_btn.click()
-                    time.sleep(0.5)
+                    self.sbm_btn.click()
+                    time.sleep(0.3)
 
-                self.sbm_btn.click()
-                time.sleep(0.5)
-
-                self.sbm_mode[mode].update()
-                if self.sbm_mode[mode].status() == "found":
-                    self.sbm_mode[mode].click()
-                    self.lastMode = mode
-                    time.sleep(0.5)
-                    break
+                    self.sbm_mode[mode].update()
+                    if self.sbm_mode[mode].status() == "found":
+                        self.sbm_mode[mode].click()
+                        self.lastMode = mode
+                        time.sleep(0.5)
+                        break
 
     def Open(self, mode="none"):
         while self.State() != "open":
@@ -515,7 +533,7 @@ class Overview:
 
 
 class ShipStatus(threading.Thread, TimeControl):
-    def __init__(self):
+    def __init__(self, obj):
         threading.Thread.__init__(self)
         TimeControl.__init__(self)
         self.bar = ScreenIndicator("bar.png", \
@@ -524,8 +542,10 @@ class ShipStatus(threading.Thread, TimeControl):
                    key=((250, 250, 250),(205,205,205),(150,150,150),(255,255,220)))
         self.names = {"shield": 0, "armor": 1, "structure": 2, "energy": 3}
         self.max = {"shield": 0.645, "armor": 0.672, "structure": 0.76, "energy": 0.562}
+        self.objects = obj
         self.work = True
         self.hp = Averager(max_time=10)
+        self.ave = [Averager(max_time=10) for i in range(15)]
         self.start()
 
     def __del__(self):
@@ -533,28 +553,46 @@ class ShipStatus(threading.Thread, TimeControl):
         self.join()
 
     def update(self):
+        with ScreenObject.control:
+            pass
+
         self.bar.update()
+
+        if self.get("structure") < 1:
+            return #no bar visible
+
         self.hp.update( self.get("shield") + self.get("armor") + self.get("structure") )
+        for i,type in enumerate(self.names):
+            self.ave[i].update(self.get(type))
+
+
+        if "rep" in self.objects:
+            persent = (90, 80)
+            shieldTime = self.estimateLifetime(type="shield")
+            for i, r in enumerate(self.objects["rep"] ):
+                r.set("active" if (self.get("armor") < persent[i] or shieldTime < 10)else "inactive")
+
 
     def get(self, name):
         if self.bar.reg:
             idx = self.names[name]
             return int(self.bar.getValue(idx=idx) / self.max[name] * 100.)
         else:
-            return 100
+            return 0
 
-    def estimateLifetime(self):
-        diff = self.hp.getDiff(step=1)
-        if self.hp.count() < 2 or diff >= 0:
+    def estimateLifetime(self, type = None):
+        hp = self.hp if type is None else self.ave[self.names[type]]
+        diff = hp.getDiff(step=1)
+        if hp.count() < 2 or diff >= 0:
             return 999
 
-        return -self.hp[-1] / diff
+        return -hp[-1] / diff
 
     def run(self):
         while self.work:
-            with MeasureTime("stat"):
-                self.update()
-                self.wait(delay=0.5)
+            #with MeasureTime("stat"):
+            self.update()
+            self.wait(1)
 
 
 # In[3]:
@@ -639,15 +677,14 @@ class LootingLogic(BaseLogic):
 
             if loot.status() != "found":
                 break
+            with ScreenObject.control:
+                print("looting")
+                loot.click()
 
-            print("looting")
-            loot.click()
-            time.sleep(0.5)
-
-            if not ProcessDialogBotton(self.loot_btn, 5):
-                print("loot btn not found")
-                closeAll()
-                continue
+                if not ProcessDialogBotton(self.loot_btn, 5):
+                    print("loot btn not found")
+                    closeAll()
+                    continue
 
             if not ProcessDialogBotton(self.loot_all, 500):
                 print("loot_all btn not found")
@@ -657,6 +694,7 @@ class LootingLogic(BaseLogic):
             if enemy.status() == "found":
                 ov.Close()
                 return
+
         ov.Close()
         if ab.status() == "found" and ab.State() == "active":
             ab.set("inactive")
@@ -666,6 +704,9 @@ class TargetLogic(threading.Thread):
     def __init__(self, obj):
         threading.Thread.__init__(self)
         self.objects = obj
+        trgt_ao = (880, 390, -880,-390)
+        self.targets = (ScreenObject("target.bmp", con=0.7, ao=trgt_ao), \
+                        ScreenObject("trgt_2.png", con=0.7, ao=trgt_ao))
         self.npc = {"frigate":ScreenObject("npc_frigate.png", static=False),
                     "destr":ScreenObject("npc_destr.png", static=False),
                     "cruiser":ScreenObject("npc_cruiser.png", static=False)}
@@ -690,6 +731,14 @@ class TargetLogic(threading.Thread):
             if self.active == False:
                 time.wait(1)
                 continue
+
+            for target in self.targets:
+                target.update()
+                if target.status() == "found":
+                    target.click()
+                    break
+
+            continue #under development
 
             trgt = None
             t = None
@@ -727,41 +776,34 @@ class BaseCombat(BaseLogic, TimeControl):
         planet = ScreenObject("planet.png", static=False)
         warp = ScreenObject("warp.png", static=False)
         ov = self.objects["OV"]
-        ov.Open(mode="planet")
 
-        planet.update()
-        if planet.status() == "found":
-            planet.click()
-        else:
-            print("planet not found")
-            return False
+        with ScreenObject.control:
+            ov.Open(mode="planet")
 
-        if not ProcessDialogBotton(warp, 5):
-            print("warp fail")
-            return False
+            planet.update()
+            if planet.status() == "found":
+                planet.click()
+            else:
+                print("planet not found")
+                return False
+
+            if not ProcessDialogBotton(warp, 5):
+                print("warp fail")
+                return False
 
         return True
 
     def onCombat(self):
         stat = self.stat
-        persent = (90, 80)
-        prev_rep_state = False
 
-        i = 0
-        for r in self.rep:
-            if r.State() == "active":
-                prev_rep_state = True
-            r.set("active" if stat.get("armor") < persent[i] else "inactive")
-            i += 1
+
 
         lifetime = stat.estimateLifetime()
         print("lifetime", lifetime)
-        if lifetime < 60 and stat.get("shield") < 20:
-            print("looks dangerous")
-            self.rep[0].set("active")
 
-        if lifetime < (50 + (10 if prev_rep_state else 0)):
+        if lifetime < (50):
             print("bad prediction lifetime", lifetime)
+            print(stat.hp.list)
             return "retreat"
 
         if stat.get("armor") < 20 and lifetime < 300:
@@ -820,39 +862,34 @@ class BaseCombat(BaseLogic, TimeControl):
         outOfCombatTimer = 5
         print("combat logic")
         exitStatus = "none"
-        #with self.targeting:
-        if True:
-            while True:
-                objects["enemy"].update()
-                enemy = objects["enemy"].status() == "found"
+        with self.targeting:
+            if True:
+                while True:
+                    objects["enemy"].update()
+                    enemy = objects["enemy"].status() == "found"
 
-                for target in objects["target"]:
-                    target.update()
-                    if target.status() == "found":
-                        target.click()
-                        break
+                    if self.onCombat() == "retreat":
+                        if self.retreat():
+                            exitStatus = "retreat"
+                            break
 
-                if self.onCombat() == "retreat":
-                    if self.retreat():
-                        exitStatus = "retreat"
-                        break
+                    if enemy:
+                        print("enemy")
+                        exitStatus = "loot"
+                        outOfCombatTimer = 5
 
-                if enemy:
-                    print("enemy")
-                    exitStatus = "loot"
-                    outOfCombatTimer = 5
+                        self.onEnemy()
 
-                    self.onEnemy()
-
-                else:
-                    print("exit combat", outOfCombatTimer)
-                    outOfCombatTimer = outOfCombatTimer - 1
-                    self.ab.set("inactive")
-
-                    if (outOfCombatTimer <= 0):
-                        break
                     else:
-                        self.wait(1)
+                        print("exit combat", outOfCombatTimer)
+                        outOfCombatTimer = outOfCombatTimer - 1
+                        if outOfCombatTimer < 4:
+                            self.ab.set("inactive")
+
+                        if (outOfCombatTimer <= 0):
+                            break
+                        else:
+                            self.wait(1)
 
             return exitStatus
 
@@ -918,53 +955,54 @@ class MissionLogic(BaseLogic):
         print("starting mission")
         while True:
 
-            if not ProcessDialogBotton(self.mission_btn, 5):
-                closeAll()
-                continue
-
-            print("search for open missions")
-            mission, missionType = self.scanMission(arr=self.mis_taken, types=types)
-
-            if mission == None:
-                print("search for new missions")
-                if not ProcessDialogBotton(self.news_btn, 5):
+            with ScreenObject.control:
+                if not ProcessDialogBotton(self.mission_btn, 5):
                     closeAll()
                     continue
 
-                mission, missionType = self.scanMission(arr=self.mis_type, types=types)
+                print("search for open missions")
+                mission, missionType = self.scanMission(arr=self.mis_taken, types=types)
 
                 if mission == None:
-                    self.refresh.update()
-                    if self.refresh.status() == "found":
-                        print("refresh")
-                        self.refresh.click()
-                        time.sleep(1)
-                    closeAll()
-                    continue
-
-                if not ProcessDialogBotton(mission, 5):
-                    closeAll()
-                    continue
-
-                if not ProcessDialogBotton(self.accept, 5, pop=False):
-                    closeAll()
-                    continue
-
-                self.confirm.update()
-                if self.confirm.status() == "found":
-                    if not ProcessDialogBotton(self.confirm, 5):
+                    print("search for new missions")
+                    if not ProcessDialogBotton(self.news_btn, 5):
                         closeAll()
                         continue
 
-            else:
-                print("select open mission")
-                if not ProcessDialogBotton(mission, 5):
+                    mission, missionType = self.scanMission(arr=self.mis_type, types=types)
+
+                    if mission == None:
+                        self.refresh.update()
+                        if self.refresh.status() == "found":
+                            print("refresh")
+                            self.refresh.click()
+                            time.sleep(1)
+                        closeAll()
+                        continue
+
+                    if not ProcessDialogBotton(mission, 5):
+                        closeAll()
+                        continue
+
+                    if not ProcessDialogBotton(self.accept, 5, pop=False):
+                        closeAll()
+                        continue
+
+                    self.confirm.update()
+                    if self.confirm.status() == "found":
+                        if not ProcessDialogBotton(self.confirm, 5):
+                            closeAll()
+                            continue
+
+                else:
+                    print("select open mission")
+                    if not ProcessDialogBotton(mission, 5):
+                        closeAll()
+                        continue
+
+                if not ProcessDialogBotton(self.begin, 5, pop=False):
                     closeAll()
                     continue
-
-            if not ProcessDialogBotton(self.begin, 5, pop=False):
-                closeAll()
-                continue
 
             self.getRidOfFace()
 
@@ -1040,19 +1078,19 @@ class RattingLogic(BaseLogic):
     def jumpFurther(self):
         ov = self.objects["OV"]
         print("activating jumpgate")
-        with ov.Open("all"):
-            self.jumpGate.update()
-            if self.jumpGate.status() != "found":
-                print("no gate")
-                return False
+        with ScreenObject.control:
+            with ov.Open("all"):
+                self.jumpGate.update()
+                if self.jumpGate.status() != "found":
+                    print("no gate")
+                    return False
 
-            self.jumpGate.click()
-            time.sleep(0.5)
+                self.jumpGate.click()
 
-            if not ProcessDialogBotton(self.activate, 5):
-                print("activate fail")
-                closeAll()
-                return False
+                if not ProcessDialogBotton(self.activate, 5):
+                    print("activate fail")
+                    closeAll()
+                    return False
 
         self.warping(WARP_TIMEOUT=15)
 
@@ -1062,21 +1100,22 @@ class RattingLogic(BaseLogic):
         print("start ratting")
         ov = self.objects["OV"]
 
-        with ov.Open(mode="anomaly"):
+        with ScreenObject.control:
+            with ov.Open(mode="anomaly"):
 
-            anomaly, anomalyType = self.scanAnomalies(arr=self.types, types=required_types)
+                anomaly, anomalyType = self.scanAnomalies(arr=self.types, types=required_types)
 
-            if anomaly:
-                print("anomaly found:", anomalyType)
-                anomaly.click()
-                time.sleep(0.5)
-            else:
-                return "none"
+                if anomaly:
+                    print("anomaly found:", anomalyType)
+                    anomaly.click()
+                    time.sleep(0.5)
+                else:
+                    return "none"
 
-            if not ProcessDialogBotton(self.warp, 5):
-                print("warp fail")
-                closeAll()
-                return "none"
+                if not ProcessDialogBotton(self.warp, 5):
+                    print("warp fail")
+                    closeAll()
+                    return "none"
 
         self.warping()
 
@@ -1120,11 +1159,11 @@ class DragonCombat(BaseCombat):
 class StabberCombat(BaseCombat):
     def __init__(self, obj):
         # update module size
-        objects["rep"] = ModuleBotton("rep_btn_2.png", "rep_mask_2.png")
+        objects["rep"] = (ModuleBotton("rep_btn_2.png", "rep_mask_2.png"),)
         objects["ab"] = ModuleBotton("ab_btn_2.png", "ab_mask_2.png")
 
         BaseCombat.__init__(self, obj)
-        self.rep = (objects["rep"],)
+        self.rep = objects["rep"]
         self.wep = {"cannon": ModuleBotton("cannon.png", "cannon_mask.png"),
                     "drones": DroneModule("drones.png")}
 
@@ -1139,10 +1178,9 @@ class StabberCombat(BaseCombat):
 
 
 objects = {}
-objects["target"] = (ScreenObject("target.bmp", con=0.7), ScreenObject("trgt_2.png", con=0.7))
 objects["enemy"] = ScreenObject("enemy.bmp", static=False)
 objects["OV"] = Overview()
-objects["stat"] = ShipStatus()
+objects["stat"] = ShipStatus(objects)
 combat = StabberCombat(objects)
 looting = LootingLogic(objects)
 mission = MissionLogic(objects)
@@ -1167,7 +1205,8 @@ while True:
     if ret == "retreat":
         time.sleep(30)
 
-    if objects["stat"].get("structure") < 90:
+    st = objects["stat"].get("structure")
+    if st < 90 and st > 0:
         with objects["OV"].Open(mode="station"):
             station = ScreenObject("station.png", static=False)
             station.update()
