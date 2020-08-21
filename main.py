@@ -168,39 +168,35 @@ class ScreenObject:
 
     def update(self):
 
+        im = pyautogui.screenshot()
+        if ScreenObject.FULLSCREEN:
+            im = im.resize((ScreenObject.WINDOW_W, ScreenObject.WINDOW_H))
+
         if self.reg:
-            # with ScreenObject.lock:
-
-            with MeasureTime("fast 1"+self.name+str(self.reg)):
-                im = pyautogui.screenshot(region=self.reg)
-                trgt = pyautogui.locate(self.img, im,  confidence=self.con)
-                if not trgt:
-                    self.trgt = None
-
-            #self.trgt = pyautogui.locateOnScreen(self.img, region=self.reg, confidence=self.con)
-            # with MeasureTime("cust search"):
-            # print("diff:",self.pixcmp())
+            self.trgt = pyautogui.locate(self.img, im, region=self.reg, confidence=self.con)
 
         if (not self.trgt) and (self.reg == () or not self.static):
             reg = None
-            if self.name != "anchor.png":
+            name = "anchor_f.png" if ScreenObject.FULLSCREEN else "anchor.png"
+            if self.name != name:
                 if ScreenObject.anchor is None:
-                    ScreenObject.anchor = ScreenObject("anchor.png")
+                    ScreenObject.anchor = ScreenObject(name)
                 if ScreenObject.anchor.reg == ():
                     ScreenObject.anchor.update()
+
                 if ScreenObject.anchor.reg != ():
                     reg = (ScreenObject.anchor.reg[0] + (self.anchor_offset[0] if self.anchor_offset else 0),\
                            ScreenObject.anchor.reg[1] + (self.anchor_offset[1] if self.anchor_offset else 0),\
                            ScreenObject.anchor.reg[2] + ScreenObject.WINDOW_W + (self.anchor_offset[3] if self.anchor_offset else 0),\
                            ScreenObject.anchor.reg[3] + ScreenObject.WINDOW_H + (self.anchor_offset[3] if self.anchor_offset else 0))
+                else:
+                    return
 
             if self.num == 0:
-                with MeasureTime("slow search "+self.name + str(reg)):
-                    im = pyautogui.screenshot(region=reg)
-                    self.trgt = pyautogui.locate(self.img, im, confidence=self.con)
+                self.trgt = pyautogui.locate(self.img, im, region=reg, confidence=self.con)
             else:
                 idx = 0
-                for trgt in pyautogui.locateAllOnScreen(self.img, confidence=self.con, region=reg):
+                for trgt in pyautogui.locateAll(self.img, im, confidence=self.con, region=reg):
                     if self.num == idx:
                         self.trgt = trgt
                         break
@@ -215,48 +211,78 @@ class ScreenObject:
 
     def click(self):
         if self.trgt:
-            pyautogui.click(self.trgt)
+            trgt = self.trgt;
+            if ScreenObject.FULLSCREEN:
+                trgt = tuple([i*2 for i in trgt])
+            pyautogui.click(trgt)
             print("click: ", self.name[:len(self.name) - 4])
 
 
 class ScreenIndicator(ScreenObject):
+    MASK_KEY = (0, 255, 0)
+    TREASHOLD = 30
 
     def __init__(self, name, mask, key, scale=1.0, num=0):
         ScreenObject.__init__(self, name, static=True, con=0.8, scale=scale, num=num)
-        self.mask = Image.open(mask).convert('RGB')
-        if scale != 1.0:
-            self.mask = self.mask.resize((int(self.mask.size[0] * scale), int(self.mask.size[1] * scale)),
-                                         Image.ANTIALIAS)
-        self.off = pyautogui.locate(Image.open(name), mask)
+        self.mask = []
+        self.mask_pos = []
+        self.cur = []
+        for m in mask:
+            im = cv2.imread(m)
+            if scale != 1.0:
+                im = im.resize(tuple([int(s * scale) for s in im.size]), Image.ANTIALIAS)
+
+            pix_arr = []
+
+            rows,cols = im.shape[:2]
+            for i in range(rows):  # for every pixel:
+                for j in range(cols):
+                    if tuple(im[i, j]) == ScreenIndicator.MASK_KEY:
+                        pix_arr.append((j,i))
+
+            self.mask.append(im)
+            self.mask_pos.append(pix_arr)
+            self.cur.append(0.0)
+
+
+        self.off = pyautogui.locate(Image.open(name), self.mask[0])
         self.lock = threading.Lock()
         # print(name, self.off)
         self.key = key
-        self.cur = 0.0
+
 
     def scanMask(self):
-        MASK_KEY = (0, 255, 0)
-        TREASHOLD = 30
-        pixels = self.mask.load()
+
         reg = None
         if self.reg and self.off:
             reg = (self.reg[0] - self.off.left, self.reg[1] - self.off.top,
-                   self.mask.size[0], self.mask.size[1])
-        im = pyautogui.screenshot(region=reg)
+                   self.mask[0].shape[1], self.mask[0].shape[0])
+        im = None
+        if ScreenObject.FULLSCREEN:
+            full_reg = tuple([i * 2 for i in reg])
+            im = pyautogui.screenshot(region=full_reg)
+            im = im.resize((self.mask[0].shape[1], self.mask[0].shape[0]))
+        else:
+            im = pyautogui.screenshot(region=reg)
 
-        count = 0
-        summ = 0
+        cur = []
+        for i, mask in enumerate(self.mask_pos):
+            count = 0
+            summ = 0
+            key = self.key[i]
 
-        for i in range(self.mask.size[1]):  # for every pixel:
-            for j in range(self.mask.size[0]):
-                if pixels[j, i] == MASK_KEY:
-                    pix = im.getpixel((j, i))
-                    count = count + 1
-                    if abs(pix[0] - self.key[0]) < TREASHOLD and abs(pix[1] - self.key[1]) < TREASHOLD and abs(
-                            pix[2] - self.key[2]) < TREASHOLD:
-                        summ = summ + 1
-        if count == 0:
-            print("mask fail:", count, summ, self.name, self.mask, reg)
-        return summ / (count + 1)
+            for pos in mask:  # for every pixel:
+                pix = im.getpixel(pos)
+                count += 1
+                if abs(pix[0] - key[0]) < ScreenIndicator.TREASHOLD and \
+                        abs(pix[1] - key[1]) < ScreenIndicator.TREASHOLD and \
+                        abs(pix[2] - key[2]) < ScreenIndicator.TREASHOLD:
+                    summ += 1
+
+            cur.append(summ / (count + 1))
+            if count == 0:
+                print("mask fail:", count, summ, self.name, self.mask, reg)
+        return cur
 
     def update(self):
 
@@ -268,9 +294,9 @@ class ScreenIndicator(ScreenObject):
             with self.lock:
                 self.cur = res
 
-    def getValue(self):
+    def getValue(self, idx=0):
         with self.lock:
-            return self.cur
+            return self.cur[idx]
 
     def click(self):
         if self.trgt:
@@ -309,7 +335,7 @@ class ModuleBotton(ScreenIndicator, threading.Thread, Botton, TimeControl):
     def __init__(self, name, mask, scale=1.0, num=0):
         threading.Thread.__init__(self)
         Botton.__init__(self)
-        ScreenIndicator.__init__(self, name, mask, key=(215, 252, 239), scale=scale, num=num)
+        ScreenIndicator.__init__(self, name, (mask,), key=((215, 252, 239),), scale=scale, num=num)
         TimeControl.__init__(self)
         self.vals = Averager(max_count=self.MAX_VALS)
         self.work = True
@@ -354,7 +380,7 @@ class ModuleBotton(ScreenIndicator, threading.Thread, Botton, TimeControl):
     def run(self):
         while self.work:
             self.update()
-            self.wait(self.TIME_PACE if self.expectedState == "active" else 3)
+            self.wait(self.TIME_PACE if self.expectedState == "active" else 1)
 
 
 class DroneModule(ScreenObject, Botton, threading.Thread, TimeControl):
@@ -414,14 +440,16 @@ class Overview:
                "anomaly": ScreenObject("ov_type_anomaly.png", ao=ao),
                "planet": ScreenObject("ov_type_planet.png", ao=ao),
                "all": ScreenObject("ov_type_all.png", ao=ao),
-               "station": ScreenObject("ov_type_station.png", ao=ao)}
+               "station": ScreenObject("ov_type_station.png", ao=ao),
+               "ship": ScreenObject("ov_type_ship.png", ao=ao)}
     sbm_btn = ScreenObject("sbmn_btn.png", ao=ao)
     ao =  (1340, 137, -1340, -137)
     sbm_mode = {"loot": ScreenObject("loot_sbmn.png", ao=ao),
                 "anomaly": ScreenObject("anomaly_sbm.png", ao=ao),
                 "planet": ScreenObject("planet_sbm.png", ao=ao),
                 "all": ScreenObject("all_sbm.png", ao=ao),
-                "station": ScreenObject("station_sbm.png", ao=ao)}
+                "station": ScreenObject("station_sbm.png", ao=ao),
+                "ship": ScreenObject("ships_sbm.png", ao=ao)}
 
     def __init__(self):
         self.lastMode = None
@@ -490,10 +518,11 @@ class ShipStatus(threading.Thread, TimeControl):
     def __init__(self):
         threading.Thread.__init__(self)
         TimeControl.__init__(self)
-        self.bar = {"shield": ScreenIndicator("bar.png", "shield_mask.png", key=(250, 250, 250)),
-                    "armor": ScreenIndicator("bar.png", "armor_mask.png", key=(205, 205, 205)),
-                    "structure": ScreenIndicator("bar.png", "structure_mask.png", key=(150, 150, 150)),
-                    "energy": ScreenIndicator("bar.png", "energy_mask.png", key=(255, 255, 220))}
+        self.bar = ScreenIndicator("bar.png", \
+                    ("shield_mask.png", "armor_mask.png", \
+                     "structure_mask.png", "energy_mask.png"), \
+                   key=((250, 250, 250),(205,205,205),(150,150,150),(255,255,220)))
+        self.names = {"shield": 0, "armor": 1, "structure": 2, "energy": 3}
         self.max = {"shield": 0.645, "armor": 0.672, "structure": 0.76, "energy": 0.562}
         self.work = True
         self.hp = Averager(max_time=10)
@@ -504,13 +533,13 @@ class ShipStatus(threading.Thread, TimeControl):
         self.join()
 
     def update(self):
-            for i in self.bar:
-                self.bar[i].update()
-            self.hp.update( self.get("shield") + self.get("armor") + self.get("structure"))
+        self.bar.update()
+        self.hp.update( self.get("shield") + self.get("armor") + self.get("structure") )
 
     def get(self, name):
-        if self.bar[name].reg:
-            return int(self.bar[name].getValue() / self.max[name] * 100.)
+        if self.bar.reg:
+            idx = self.names[name]
+            return int(self.bar.getValue(idx=idx) / self.max[name] * 100.)
         else:
             return 100
 
@@ -523,8 +552,9 @@ class ShipStatus(threading.Thread, TimeControl):
 
     def run(self):
         while self.work:
-            self.update()
-            self.wait(delay=0.5)
+            with MeasureTime("stat"):
+                self.update()
+                self.wait(delay=0.5)
 
 
 # In[3]:
@@ -631,11 +661,59 @@ class LootingLogic(BaseLogic):
         if ab.status() == "found" and ab.State() == "active":
             ab.set("inactive")
 
+class TargetLogic(threading.Thread):
+
+    def __init__(self, obj):
+        threading.Thread.__init__(self)
+        self.objects = obj
+        self.npc = {"frigate":ScreenObject("npc_frigate.png", static=False),
+                    "destr":ScreenObject("npc_destr.png", static=False),
+                    "cruiser":ScreenObject("npc_cruiser.png", static=False)}
+        self.focus_fire = ScreenObject("focus_fire.png", static=False)
+        self.targets = {"frigate", "destr", "cruiser"}
+        self.active = False
+        self.start()
+
+    def setOrder(self, order):
+        self.targets = order
+        return self
+
+    def __enter__(self):
+        self.active = True
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.active = False
+
+    def run(self) -> None:
+        time = TimeControl()
+        while True:
+            if self.active == False:
+                time.wait(1)
+                continue
+
+            trgt = None
+            t = None
+            for t in ("cruiser",):
+                self.npc[t].update()
+                if self.npc[t].status() == "found":
+                    trgt = self.npc[t]
+                    break
+
+            if trgt:
+                print("target ", t)
+                trgt.click()
+                ProcessDialogBotton(self.focus_fire)
+            else:
+                print("no targets")
+
+
+
 
 class BaseCombat(BaseLogic, TimeControl):
     def __init__(self, obj):
         BaseLogic.__init__(self, obj)
         TimeControl.__init__(self)
+        self.targeting = TargetLogic(obj)
         self.stat = obj["stat"]
         self.rep = None
         self.wep = {}
@@ -742,39 +820,41 @@ class BaseCombat(BaseLogic, TimeControl):
         outOfCombatTimer = 5
         print("combat logic")
         exitStatus = "none"
-        while True:
-            objects["enemy"].update()
-            enemy = objects["enemy"].status() == "found"
+        #with self.targeting:
+        if True:
+            while True:
+                objects["enemy"].update()
+                enemy = objects["enemy"].status() == "found"
 
-            for target in objects["target"]:
-                target.update()
-                if target.status() == "found":
-                    target.click()
-                    break
+                for target in objects["target"]:
+                    target.update()
+                    if target.status() == "found":
+                        target.click()
+                        break
 
-            if self.onCombat() == "retreat":
-                if self.retreat():
-                    exitStatus = "retreat"
-                    break
+                if self.onCombat() == "retreat":
+                    if self.retreat():
+                        exitStatus = "retreat"
+                        break
 
-            if enemy:
-                print("enemy")
-                exitStatus = "loot"
-                outOfCombatTimer = 5
+                if enemy:
+                    print("enemy")
+                    exitStatus = "loot"
+                    outOfCombatTimer = 5
 
-                self.onEnemy()
+                    self.onEnemy()
 
-            else:
-                print("exit combat", outOfCombatTimer)
-                outOfCombatTimer = outOfCombatTimer - 1
-                self.ab.set("inactive")
-
-                if (outOfCombatTimer <= 0):
-                    break
                 else:
-                    self.wait(1)
+                    print("exit combat", outOfCombatTimer)
+                    outOfCombatTimer = outOfCombatTimer - 1
+                    self.ab.set("inactive")
 
-        return exitStatus
+                    if (outOfCombatTimer <= 0):
+                        break
+                    else:
+                        self.wait(1)
+
+            return exitStatus
 
 
 class MissionLogic(BaseLogic):
@@ -869,6 +949,13 @@ class MissionLogic(BaseLogic):
                 if not ProcessDialogBotton(self.accept, 5, pop=False):
                     closeAll()
                     continue
+
+                self.confirm.update()
+                if self.confirm.status() == "found":
+                    if not ProcessDialogBotton(self.confirm, 5):
+                        closeAll()
+                        continue
+
             else:
                 print("select open mission")
                 if not ProcessDialogBotton(mission, 5):
