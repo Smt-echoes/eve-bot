@@ -9,6 +9,7 @@ import win32gui
 import win32api
 import pyautogui
 import cv2
+import statistics
 
 from PIL import Image
 from numpy import *
@@ -82,22 +83,27 @@ class Averager:
     def getDiff(self, step=1):
         diff = 0
         time = 0
-        if self.count() < 2:
+        if self.count() < 3:
             return 0
-        for iteration, item in enumerate(self.time):
-            if iteration > 0:
-                diff += self.list[iteration] - self.list[iteration - 1]
-                time += self.time[iteration] - self.time[iteration - 1]
+        list = []
+
+        for i, _ in enumerate(self.list):
+            j = min(max(i,1),len(self.list) -1)
+            list.append( statistics.median(self.list[j-1:j+1]))
+
+        for i, _ in enumerate(self.time):
+            if i > 0:
+                diff += list[i] - list[i - 1]
+                time += self.time[i] - self.time[i - 1]
         return diff * step / time
 
-    def getAve(self, step = 1):
+    def getAve(self):
         summ = 0
         if self.count() < 2:
             return 0
-        time = self.time[-1] - self.time[0]
         for item in self.list:
             summ += item
-        return summ * step / time
+        return summ / self.count()
 
 
 
@@ -306,14 +312,19 @@ class ScreenIndicator(ScreenObject):
         with self.lock:
             return self.cur[idx]
 
-    def click(self):
-        if self.trgt:
+    def click(self, mask = False):
+        if self.trgt and not mask:
             ScreenObject.click(self)
         else:
             if self.reg:
                 print("blind click: ", self.name[:len(self.name) - 4])
                 with ScreenObject.control:
-                    pyautogui.click(self.reg[0] + self.reg[2] / 2, self.reg[1] + self.reg[3] / 2)
+                    if mask:
+                        pyautogui.click(\
+                            self.reg[0] - self.off.left + int(self.mask[0].shape[0]/2),\
+                            self.reg[1] - self.off.top +  int(self.mask[0].shape[0]/2))
+                    else:
+                        pyautogui.click(self.reg[0] + self.reg[2] / 2, self.reg[1] + self.reg[3] / 2)
 
 
 class Botton():
@@ -544,8 +555,8 @@ class ShipStatus(threading.Thread, TimeControl):
         self.max = {"shield": 0.645, "armor": 0.672, "structure": 0.76, "energy": 0.562}
         self.objects = obj
         self.work = True
-        self.hp = Averager(max_time=10)
-        self.ave = [Averager(max_time=10) for i in range(15)]
+        self.hp = Averager(max_time=15)
+        self.ave = [Averager(max_time=15) for i in range(15)]
         self.start()
 
     def __del__(self):
@@ -586,7 +597,7 @@ class ShipStatus(threading.Thread, TimeControl):
         if hp.count() < 2 or diff >= 0:
             return 999
 
-        return -hp[-1] / diff
+        return -hp.getAve() / diff
 
     def run(self):
         while self.work:
@@ -699,19 +710,22 @@ class LootingLogic(BaseLogic):
         if ab.status() == "found" and ab.State() == "active":
             ab.set("inactive")
 
-class TargetLogic(threading.Thread):
+class TargetLogic(threading.Thread, TimeControl):
 
     def __init__(self, obj):
         threading.Thread.__init__(self)
+        TimeControl.__init__(self)
         self.objects = obj
-        trgt_ao = (880, 390, -880,-390)
-        self.targets = (ScreenObject("target.bmp", con=0.7, ao=trgt_ao), \
-                        ScreenObject("trgt_2.png", con=0.7, ao=trgt_ao))
-        self.npc = {"frigate":ScreenObject("npc_frigate.png", static=False),
-                    "destr":ScreenObject("npc_destr.png", static=False),
-                    "cruiser":ScreenObject("npc_cruiser.png", static=False)}
+        lock_ao = (880, 390, -880,-390)
+        self.autolock = (ScreenObject("target.bmp", con=0.7, ao=lock_ao), \
+                        ScreenObject("trgt_2.png", con=0.7, ao=lock_ao))
+        trgt_ao=(900, 0, -900, -ScreenObject.WINDOW_H +200)
+        self.npc = {"frigate":ScreenObject("npc_frigate.png", con=0.7, static=False, ao=trgt_ao),
+                    "destr":ScreenObject("npc_destr.png", con=0.7, static=False, ao=trgt_ao),}
+                    #"cruiser":ScreenObject("npc_cruiser.png", static=False)}
         self.focus_fire = ScreenObject("focus_fire.png", static=False)
-        self.targets = {"frigate", "destr", "cruiser"}
+        self.focused = None
+        self.targets = {"frigate", "destr"}
         self.active = False
         self.start()
 
@@ -726,34 +740,41 @@ class TargetLogic(threading.Thread):
         self.active = False
 
     def run(self) -> None:
-        time = TimeControl()
+        update_target_cd = 0
         while True:
             if self.active == False:
-                time.wait(1)
                 continue
 
-            for target in self.targets:
-                target.update()
-                if target.status() == "found":
-                    target.click()
+            for lock in self.autolock:
+                lock.update()
+                if lock.status() == "found":
+                    lock.click()
                     break
 
-            continue #under development
+            continue
 
             trgt = None
             t = None
-            for t in ("cruiser",):
+            for t in self.npc:
                 self.npc[t].update()
                 if self.npc[t].status() == "found":
                     trgt = self.npc[t]
                     break
 
-            if trgt:
-                print("target ", t)
-                trgt.click()
-                ProcessDialogBotton(self.focus_fire)
-            else:
-                print("no targets")
+            if trgt and trgt.reg != self.focused:
+                if update_target_cd <= 0:
+                    with ScreenObject.control:
+                        print("target ", t)
+                        trgt.click()
+                        ProcessDialogBotton(self.focus_fire, 2)
+                    if "nosf" in self.objects:
+                        self.objects["nosf"].set("inactive")
+                    self.focused = trgt.reg
+                    update_target_cd = 10
+                else:
+                    update_target_cd -= 1
+
+            self.wait(1)
 
 
 
@@ -799,14 +820,15 @@ class BaseCombat(BaseLogic, TimeControl):
 
 
         lifetime = stat.estimateLifetime()
-        print("lifetime", lifetime)
+        ar_lifetime = stat.estimateLifetime(type="armor")
+        print("lifetime", lifetime, ar_lifetime)
 
-        if lifetime < (50):
+        if ar_lifetime < 20 or lifetime < 40:
             print("bad prediction lifetime", lifetime)
             print(stat.hp.list)
             return "retreat"
 
-        if stat.get("armor") < 20 and lifetime < 300:
+        if stat.get("armor") < 20 and lifetime < 100:
             print("low armor", stat.get("armor"))
             return "retreat"
 
@@ -859,7 +881,7 @@ class BaseCombat(BaseLogic, TimeControl):
         return
 
     def execute(self):
-        outOfCombatTimer = 5
+        outOfCombatTimer = 10
         print("combat logic")
         exitStatus = "none"
         with self.targeting:
@@ -888,8 +910,8 @@ class BaseCombat(BaseLogic, TimeControl):
 
                         if (outOfCombatTimer <= 0):
                             break
-                        else:
-                            self.wait(1)
+
+                    self.wait(1)
 
             return exitStatus
 
@@ -907,10 +929,36 @@ class MissionLogic(BaseLogic):
         self.begin = ScreenObject("begin.png", static=False, con=0.9)
         self.confirm = ScreenObject("confirm.png", static=False, con=0.9)
         self.refresh = ScreenObject("refresh.png")
+        self.refresh_sts = ScreenObject("refresh_status.png")
         self.delivery_finish = ScreenObject("delivery_finish.png", static=False)
         self.face = (ScreenObject("dialog.png", static=False),
                      ScreenObject("dialog2.png", static=False),
                      ScreenObject("dialog3.png", static=False),)
+        self.risk = ScreenObject("risk.png", static=False)
+        self.filter = ScreenObject("filter.png")
+        self.high_sec = ScreenIndicator("high_sec.png", ("high_sec_mask.png",), key=((228,200,134),))
+
+    def filterType(self, type):
+        print("select", type)
+        self.filter.update()
+        if self.filter.status() == "found":
+            self.filter.click()
+            time.sleep(0.2)
+
+            self.high_sec.update()
+            if self.high_sec.status() == "found":
+                val = self.high_sec.getValue()
+                if (type == "high" and val <= 0.01) or \
+                    (type == "low" and val > 0.01):
+                    self.high_sec.click(mask=True)
+                    time.sleep(0.2)
+            else:
+                print("err: high sec not found")
+
+            self.filter.click()
+            time.sleep(1.0)
+        else:
+            print("err: filter btn not found")
 
     def getRidOfFace(self):
         print("fucking faces")
@@ -969,15 +1017,27 @@ class MissionLogic(BaseLogic):
                         closeAll()
                         continue
 
-                    mission, missionType = self.scanMission(arr=self.mis_type, types=types)
+                    for t in ("low", "high"):
+                        self.filterType(t)
+
+                        for i in range(2):
+                            mission, missionType = self.scanMission(arr=self.mis_type, types=types)
+
+                            if mission == None:
+                                self.refresh_sts.update()
+                                self.refresh.update()
+                                if self.refresh_sts.status() == "found" and \
+                                        self.refresh.status() == "found":
+                                    print("refresh")
+                                    self.refresh.click()
+                                    time.sleep(2)
+                                    continue
+                                break;
+
+                        if mission:
+                            break
 
                     if mission == None:
-                        self.refresh.update()
-                        if self.refresh.status() == "found":
-                            print("refresh")
-                            self.refresh.click()
-                            time.sleep(1)
-                        closeAll()
                         continue
 
                     if not ProcessDialogBotton(mission, 5):
@@ -999,6 +1059,8 @@ class MissionLogic(BaseLogic):
                     if not ProcessDialogBotton(mission, 5):
                         closeAll()
                         continue
+
+                self.risk.update()
 
                 if not ProcessDialogBotton(self.begin, 5, pop=False):
                     closeAll()
@@ -1031,12 +1093,13 @@ class MissionLogic(BaseLogic):
                         self.getRidOfFace()
                         break
 
-            return missionType
+            return missionType, "risk" if  self.risk == "found" else None
 
 
-class RattingLogic(BaseLogic):
+class RattingLogic(BaseLogic, TimeControl):
     def __init__(self, obj):
         BaseLogic.__init__(self, obj)
+        TimeControl.__init__(self)
         self.types = {"inquisitor": ScreenObject("inquisitor.png", static=False),
                       "scout": ScreenObject("scout.png", static=False),
                       "small": ScreenObject("small.png", static=False),
@@ -1054,13 +1117,12 @@ class RattingLogic(BaseLogic):
                 return arr[type], type
         return None, "none"
 
-    def warping(self, WARP_TIMEOUT=30):
+    def warping(self, WARP_TIMEOUT=40):
         ov = self.objects["OV"]
-        WARP_TIMEOUT = 30
         start = time.time()
         print("warping")
         with ov.Open("all"):
-            while time.time() - start < 30:
+            while time.time() - start < WARP_TIMEOUT:
 
                 self.objects["enemy"].update()
                 if self.objects["enemy"].status() == "found":
@@ -1119,7 +1181,7 @@ class RattingLogic(BaseLogic):
 
         self.warping()
 
-        return anomalyType
+        return anomalyType, None
 
 
 class CoerserCombat(BaseCombat):
@@ -1161,6 +1223,7 @@ class StabberCombat(BaseCombat):
         # update module size
         objects["rep"] = (ModuleBotton("rep_btn_2.png", "rep_mask_2.png"),)
         objects["ab"] = ModuleBotton("ab_btn_2.png", "ab_mask_2.png")
+        objects["nosf"] = ModuleBotton("nosf_btn_2.png", "nosf_mask_2.png")
 
         BaseCombat.__init__(self, obj)
         self.rep = objects["rep"]
@@ -1169,11 +1232,11 @@ class StabberCombat(BaseCombat):
 
         self.ab = objects["ab"]
 
-        self.nosf = ModuleBotton("nosf_btn_2.png", "nosf_mask_2.png")
+        self.nosf = objects["nosf"]
 
         self.cmbt_mod = {"web": ModuleBotton("web_btn_2.png", "web_mask_2.png")}
 
-        self.hrd = ModuleBotton("hrd_btn_2.png", "hrd_mask_2.png")
+        self.hrd = None #ModuleBotton("hrd_btn_2.png", "hrd_mask_2.png")
     # In[4]:
 
 
@@ -1188,6 +1251,7 @@ ratting = RattingLogic(objects)
 
 work = "mission"
 task = "none"
+risk = None
 while True:
     ret = combat.execute()
     if ret != "retreat":
@@ -1218,7 +1282,9 @@ while True:
                 ProcessDialogBotton(dock, 5)
 
                 work = "mission"
-                time.sleep(25)
+                dock = ScreenObject("undock.png", static=False)
+                ProcessDialogBotton(dock, 60)
+
             elif objects["stat"].get("structure") < 50:
                 break
 
@@ -1229,7 +1295,7 @@ while True:
     #    work = "rating" if work == "mission" else "mission"
     #elif work == "mission":
     #    work = "rating"
-    if ret != "retreat":
+    if ret != "retreat" and not risk:
         task = ratting.execute(required_types=("inquisitor", "scout"))
         if task != "none":
             work = "rating"
@@ -1238,9 +1304,10 @@ while True:
             work = "mission"
 
     if work == "mission":
-        task = mission.execute({"combat"})
+        task, risk = mission.execute({"combat"})
     elif work == "rating":
-        task = ratting.execute(required_types=("inquisitor", "scout", "small"))
+        task, risk = ratting.execute(required_types=("inquisitor", "scout", "small"))
+    print("starting ", work, task, risk )
 
         # task = ratting.execute({"scout"})
 
