@@ -202,41 +202,66 @@ class ScreenObject:
                 else:
                     return
 
-            if self.num == 0:
-                self.trgt = pyautogui.locate(self.img, im, region=reg, confidence=self.con)
-            else:
-                idx = 0
-                for trgt in pyautogui.locateAll(self.img, im, confidence=self.con, region=reg):
-                    if self.num == idx:
-                        self.trgt = trgt
-                        break
-                    idx += 1
+            self.generator = pyautogui.locateAll(self.img, im, confidence=self.con, region=reg)
+
+            for i, trgt in enumerate(self.generator):
+                if self.num == i:
+                    self.trgt = trgt
+                    break
 
         if self.trgt and (self.reg == () or self.static is False):
-            offset = 0
-            self.reg = (self.trgt.left - offset, self.trgt.top - offset, self.trgt.width + offset, self.trgt.height + offset)
+            self.reg = (self.trgt.left, self.trgt.top, self.trgt.width, self.trgt.height)
 
     def status(self):
         return "found" if self.trgt else "not found"
 
+    def reset(self):
+        self.generator = None
+        self.trgt = None
+        self.reg = ()
+
+    def next(self):
+        if self.generator:
+            try:
+                self.trgt = next(self.generator)
+                self.reg = (self.trgt.left, self.trgt.top, self.trgt.width, self.trgt.height)
+            except StopIteration:
+                self.trgt = None
+                self.reg = ()
+        else:
+            self.update()
+
+        return self
+
+    def __iter__(self):
+        while True:
+            yield self
+            self.next()
+            if not self.trgt:
+                return
+
     def click(self):
-        if self.trgt:
-            trgt = self.trgt;
-            if ScreenObject.FULLSCREEN:
-                trgt = tuple([i*2 for i in trgt])
-            with ScreenObject.control:
-                pyautogui.click(trgt)
-            print("click: ", self.name[:len(self.name) - 4])
+        try:
+            if self.trgt:
+                trgt = self.trgt;
+                if ScreenObject.FULLSCREEN:
+                    trgt = tuple([i*2 for i in trgt])
+                with ScreenObject.control:
+                    pyautogui.click(trgt)
+                print("click: ", self.name[:len(self.name) - 4])
+        except:
+            print("err: click exception")
 
 
 class ScreenIndicator(ScreenObject):
     MASK_KEY = (0, 255, 0)
 
-    def __init__(self, name, mask, key, scale=1.0, num=0, th=30):
-        ScreenObject.__init__(self, name, static=True, con=0.8, scale=scale, num=num)
+    def __init__(self, name, mask, key, scale=1.0, num=0, th=30, con=0.8, ao = None):
+        ScreenObject.__init__(self, name, static=True, con=con, scale=scale, num=num, ao=ao)
         self.mask = []
         self.mask_pos = []
         self.cur = []
+        self.off = []
         for m in mask:
             im = cv2.imread(m)
             if scale != 1.0:
@@ -250,12 +275,16 @@ class ScreenIndicator(ScreenObject):
                     if tuple(im[i, j]) == ScreenIndicator.MASK_KEY:
                         pix_arr.append((j,i))
 
+            off = pyautogui.locate(self.img, im)
+            if not off:
+                off = pyautogui.locate(self.img, im, confidence=0.6)
+                if not off:
+                    print("err:find offset" ,self.name, m)
+            self.off.append(off)
             self.mask.append(im)
             self.mask_pos.append(pix_arr)
             self.cur.append(0.0)
 
-
-        self.off = pyautogui.locate(Image.open(name), self.mask[0])
         self.lock = threading.Lock()
         # print(name, self.off)
         self.key = key
@@ -264,23 +293,31 @@ class ScreenIndicator(ScreenObject):
 
     def scanMask(self):
 
-        reg = None
-        if self.reg and self.off:
-            reg = (self.reg[0] - self.off.left, self.reg[1] - self.off.top,
-                   self.mask[0].shape[1], self.mask[0].shape[0])
-        im = None
-        if ScreenObject.FULLSCREEN:
-            full_reg = tuple([i * 2 for i in reg])
-            im = pyautogui.screenshot(region=full_reg)
-            im = im.resize((self.mask[0].shape[1], self.mask[0].shape[0]))
-        else:
-            im = pyautogui.screenshot(region=reg)
 
+        im = None
         cur = []
         for i, mask in enumerate(self.mask_pos):
             count = 0
             summ = 0
             key = self.key[i]
+
+            reg = None
+            if i == 0 or not\
+                (self.off[i].left == self.off[i-1].left and \
+                    self.off[i].top == self.off[i-1].top and \
+                    self.mask[i].shape[1] <= self.mask[i-1].shape[1] and \
+                    self.mask[i].shape[0] <= self.mask[i-1].shape[0]):
+
+                    if self.reg and self.off:
+                        reg = (self.reg[0] - self.off[i].left, self.reg[1] - self.off[i].top,
+                               self.mask[i].shape[1], self.mask[i].shape[0])
+
+                        if ScreenObject.FULLSCREEN:
+                            full_reg = tuple([i * 2 for i in reg])
+                            im = pyautogui.screenshot(region=full_reg)
+                            im = im.resize((self.mask[i].shape[1], self.mask[i].shape[0]))
+                        else:
+                            im = pyautogui.screenshot(region=reg)
 
             for pos in mask:  # for every pixel:
                 pix = im.getpixel(pos)
@@ -321,8 +358,8 @@ class ScreenIndicator(ScreenObject):
                 with ScreenObject.control:
                     if mask:
                         pyautogui.click(\
-                            self.reg[0] - self.off.left + int(self.mask[0].shape[0]/2),\
-                            self.reg[1] - self.off.top +  int(self.mask[0].shape[0]/2))
+                            self.reg[0] - self.off[0].left + int(self.mask[0].shape[0]/2),\
+                            self.reg[1] - self.off[0].top +  int(self.mask[0].shape[0]/2))
                     else:
                         pyautogui.click(self.reg[0] + self.reg[2] / 2, self.reg[1] + self.reg[3] / 2)
 
@@ -557,6 +594,7 @@ class ShipStatus(threading.Thread, TimeControl):
         self.work = True
         self.hp = Averager(max_time=15)
         self.ave = [Averager(max_time=15) for i in range(15)]
+        self.lock = threading.Lock()
         self.start()
 
     def __del__(self):
@@ -571,10 +609,10 @@ class ShipStatus(threading.Thread, TimeControl):
 
         if self.get("structure") < 1:
             return #no bar visible
-
-        self.hp.update( self.get("shield") + self.get("armor") + self.get("structure") )
-        for i,type in enumerate(self.names):
-            self.ave[i].update(self.get(type))
+        with self.lock:
+            self.hp.update( self.get("shield") + self.get("armor") + self.get("structure") )
+            for i,type in enumerate(self.names):
+                self.ave[i].update(self.get(type))
 
 
         if "rep" in self.objects:
@@ -592,12 +630,13 @@ class ShipStatus(threading.Thread, TimeControl):
             return 0
 
     def estimateLifetime(self, type = None):
-        hp = self.hp if type is None else self.ave[self.names[type]]
-        diff = hp.getDiff(step=1)
-        if hp.count() < 2 or diff >= 0:
-            return 999
+        with self.lock:
+            hp = self.hp if type is None else self.ave[self.names[type]]
+            diff = hp.getDiff(step=1)
+            if hp.count() < 2 or diff >= 0:
+                return 999
 
-        return -hp.getAve() / diff
+            return -hp.getAve() / diff
 
     def run(self):
         while self.work:
@@ -823,7 +862,7 @@ class BaseCombat(BaseLogic, TimeControl):
         ar_lifetime = stat.estimateLifetime(type="armor")
         print("lifetime", lifetime, ar_lifetime)
 
-        if ar_lifetime < 20 or lifetime < 40:
+        if ar_lifetime < 25 or lifetime < 40:
             print("bad prediction lifetime", lifetime)
             print(stat.hp.list)
             return "retreat"
@@ -921,7 +960,7 @@ class MissionLogic(BaseLogic):
         BaseLogic.__init__(self, obj)
         self.mission_btn = ScreenObject("mis_btn.png", static=False, con=0.7)
         self.news_btn = ScreenObject("news_btn.png")
-        self.mis_type = {"combat": ScreenObject("mis_combat.png", static=False),
+        self.mis_type = {"combat": ScreenObject("mis_combat.png", static=False, con=0.7),
                          "delivery": ScreenObject("mis_delivery.png", static=False), }
         self.mis_taken = {"combat": ScreenObject("mis_combat_t.png", static=False),
                           "delivery": ScreenObject("mis_delivery_t.png", static=False), }
@@ -934,24 +973,25 @@ class MissionLogic(BaseLogic):
         self.face = (ScreenObject("dialog.png", static=False),
                      ScreenObject("dialog2.png", static=False),
                      ScreenObject("dialog3.png", static=False),)
-        self.risk = ScreenObject("risk.png", static=False)
+        self.risk = ScreenObject("risk.png", static=False, con=0.7)
         self.filter = ScreenObject("filter.png")
-        self.high_sec = ScreenIndicator("high_sec.png", ("high_sec_mask.png",), key=((228,200,134),))
+        self.high_sec = ScreenIndicator("high_sec.png", ("high_sec_mask.png",), key=((228,200,134),), con=0.7)
 
     def filterType(self, type):
         print("select", type)
         self.filter.update()
         if self.filter.status() == "found":
             self.filter.click()
-            time.sleep(0.2)
+            time.sleep(2)
 
+            self.high_sec.reset()
             self.high_sec.update()
             if self.high_sec.status() == "found":
                 val = self.high_sec.getValue()
                 if (type == "high" and val <= 0.01) or \
                     (type == "low" and val > 0.01):
                     self.high_sec.click(mask=True)
-                    time.sleep(0.2)
+                    time.sleep(1)
             else:
                 print("err: high sec not found")
 
@@ -1267,10 +1307,11 @@ while True:
             time.sleep(20)
 
     if ret == "retreat":
-        time.sleep(30)
+        print("wait 40")
+        time.sleep(40)
 
     st = objects["stat"].get("structure")
-    if st < 90 and st > 0:
+    if st < 98 and st > 0:
         with objects["OV"].Open(mode="station"):
             station = ScreenObject("station.png", static=False)
             station.update()
