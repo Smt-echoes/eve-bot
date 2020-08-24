@@ -20,14 +20,19 @@ import threading
 
 
 def debug_show(pos, col=(0, 0, 0)):
-    dc = win32gui.GetDC(0)
-    c = win32api.RGB(col[0], col[1], col[2])
-    for i in range(pos[0], pos[0] + pos[2]):
-        win32gui.SetPixel(dc, i, pos[1], c)
-        win32gui.SetPixel(dc, i, pos[1] + pos[3], c)
-    for i in range(pos[1], pos[1] + pos[3]):
-        win32gui.SetPixel(dc, pos[0], i, c)
-        win32gui.SetPixel(dc, pos[0] + pos[2], i, c)
+    if pos is None:
+        return
+    try:
+        dc = win32gui.GetDC(0)
+        c = win32api.RGB(col[0], col[1], col[2])
+        for i in range(pos[0], pos[0] + pos[2]):
+            win32gui.SetPixel(dc, i, pos[1], c)
+            win32gui.SetPixel(dc, i, pos[1] + pos[3], c)
+        for i in range(pos[1], pos[1] + pos[3]):
+            win32gui.SetPixel(dc, pos[0], i, c)
+            win32gui.SetPixel(dc, pos[0] + pos[2], i, c)
+    except:
+        print("reg range error")
 
 
 class MeasureTime:
@@ -133,7 +138,7 @@ class ScreenObject:
     anchor = None
     control = threading.RLock()
 
-    def __init__(self, name, static=True, con=0.8, scale=1.0, num=0, ao=None):
+    def __init__(self, name, static=True, con=0.8, scale=1.0, num=0, ao=None, filter=None):
         self.name = name
         self.img = cv2.imread(name)
 
@@ -145,36 +150,27 @@ class ScreenObject:
         self.reg = ()
         self.num = num
         self.anchor_offset = ao
+        self.filter_mask = None
+        if filter == "red":
+            self.filter_mask = self.img.copy()
+            for i in range(self.filter_mask.shape[0]):
+                for j in range(self.filter_mask.shape[1]):
+                    p = self.filter_mask[i,j]
+                    s = int(p[2]) - max(p[1],p[0])
+                    self.filter_mask[i, j] = (0,0,0) if s < 70 else p
+        elif filter is not None:
+            self.filter_mask = cv2.imread(filter)
+            for i in range(self.filter_mask.shape[0]):
+                for j in range(self.filter_mask.shape[1]):
+                    p = self.filter_mask[i,j]
+                    self.filter_mask[i, j] = (0,0,0) if tuple(p) != (0,255,0) else self.img[i,j]
 
-    def pixcmp(self):
 
-        if not self.reg:
-            return 9999999
-        reg = (self.reg[0], self.reg[1],
-               self.img.size[0], self.img.size[1])
-        im = pyautogui.screenshot(region=reg)
-        pix = self.img.load()
+            #cv2.imshow("mask", self.filter_mask)
+            #cv2.waitKey(0)
 
-        sse = 0
 
-        for i in range(1, self.img.size[1]):  # for every pixel:
-            left_s = pix[0, i]
-            left_i = im.getpixel((0, i))
-            for j in range(1, self.img.size[0]):
-                top_s = pix[j, i - 1]
-                cur_s = pix[j, i]
-                top_i = im.getpixel((j, i - 1))
-                cur_i = im.getpixel((j, i))
 
-                for c in range(3):
-                    d_top = (cur_i[c] - top_i[c]) - (cur_s[c] - top_s[c])
-                    d_lef = (cur_i[c] - left_i[c]) - (cur_s[c] - left_s[c])
-                    sse += d_top * d_top + d_lef * d_lef
-
-                left_i = cur_i
-                left_s = cur_s
-
-        return sse / (self.img.size[1] * self.img.size[0])
 
     def update(self):
 
@@ -183,7 +179,7 @@ class ScreenObject:
             im = im.resize((ScreenObject.WINDOW_W, ScreenObject.WINDOW_H))
 
         if self.reg:
-            self.trgt = pyautogui.locate(self.img, im, region=self.reg, confidence=self.con)
+            self.trgt = pyautogui.locate(self.img, im, region=self.reg, confidence=self.con, mask=self.filter_mask)
 
         if (not self.trgt) and (self.reg == () or not self.static):
             reg = None
@@ -201,8 +197,9 @@ class ScreenObject:
                            ScreenObject.anchor.reg[3] + ScreenObject.WINDOW_H + (self.anchor_offset[3] if self.anchor_offset else 0))
                 else:
                     return
-
-            self.generator = pyautogui.locateAll(self.img, im, confidence=self.con, region=reg)
+            #if reg:
+            #    debug_show(reg)
+            self.generator = pyautogui.locateAll(self.img, im, confidence=self.con, region=reg, mask=self.filter_mask)
 
             for i, trgt in enumerate(self.generator):
                 if self.num == i:
@@ -256,8 +253,8 @@ class ScreenObject:
 class ScreenIndicator(ScreenObject):
     MASK_KEY = (0, 255, 0)
 
-    def __init__(self, name, mask, key, scale=1.0, num=0, th=30, con=0.8, ao = None):
-        ScreenObject.__init__(self, name, static=True, con=con, scale=scale, num=num, ao=ao)
+    def __init__(self, name, mask, key, scale=1.0, num=0, th=30, con=0.8, ao = None, filter=None):
+        ScreenObject.__init__(self, name, static=True, con=con, scale=scale, num=num, ao=ao, filter=filter)
         self.mask = []
         self.mask_pos = []
         self.cur = []
@@ -593,7 +590,7 @@ class ShipStatus(threading.Thread, TimeControl):
         self.objects = obj
         self.work = True
         self.hp = Averager(max_time=15)
-        self.ave = [Averager(max_time=15) for i in range(15)]
+        self.ave = [Averager(max_time=15) for i in range(4)]
         self.lock = threading.Lock()
         self.start()
 
@@ -758,9 +755,10 @@ class TargetLogic(threading.Thread, TimeControl):
         lock_ao = (880, 390, -880,-390)
         self.autolock = (ScreenObject("target.bmp", con=0.7, ao=lock_ao), \
                         ScreenObject("trgt_2.png", con=0.7, ao=lock_ao))
-        trgt_ao=(900, 0, -900, -ScreenObject.WINDOW_H +200)
-        self.npc = {"frigate":ScreenObject("npc_frigate.png", con=0.7, static=False, ao=trgt_ao),
-                    "destr":ScreenObject("npc_destr.png", con=0.7, static=False, ao=trgt_ao),}
+        trgt_ao=(920, 100, -900, -ScreenObject.WINDOW_H + 30)
+        self.npc = {"frigate":ScreenIndicator("frigate.png",mask=("frigate_mask.png",), key=((120,110,100),) ,filter="red", con=0.98, ao=trgt_ao),
+                    "destr":ScreenIndicator("destr.png",mask=("destr_mask.png",), key=((120,110,100),) ,filter="red", con=0.98, ao=trgt_ao),}
+                    #"destr":ScreenObject("npc_destr.png", con=0.7, static=False, ao=trgt_ao),}
                     #"cruiser":ScreenObject("npc_cruiser.png", static=False)}
         self.focus_fire = ScreenObject("focus_fire.png", static=False)
         self.focused = None
@@ -790,28 +788,37 @@ class TargetLogic(threading.Thread, TimeControl):
                     lock.click()
                     break
 
-            continue
+            #continue
 
             trgt = None
             t = None
             for t in self.npc:
-                self.npc[t].update()
-                if self.npc[t].status() == "found":
-                    trgt = self.npc[t]
+                while True:
+                    ScreenObject.update(self.npc[t])
+                    if self.npc[t].status() == "found":
+                        update_target_cd = 5
+                        self.npc[t].update()
+                        trgt = self.npc[t]
+                        #debug_show(trgt.reg, col=(255,0,0))
+                    elif self.npc[t].reg != ():
+                        if  update_target_cd >= 0:
+                            update_target_cd -= 1
+                            trgt = self.npc[t]
+                        else:
+                            self.npc[t].reset()
+                            continue
+                    break
+                if trgt:
                     break
 
-            if trgt and trgt.reg != self.focused:
-                if update_target_cd <= 0:
+            if trgt and trgt.status() == "found" and trgt.getValue() < 0.4:
                     with ScreenObject.control:
-                        print("target ", t)
+                        print("targeting ", t)
                         trgt.click()
                         ProcessDialogBotton(self.focus_fire, 2)
                     if "nosf" in self.objects:
                         self.objects["nosf"].set("inactive")
                     self.focused = trgt.reg
-                    update_target_cd = 10
-                else:
-                    update_target_cd -= 1
 
             self.wait(1)
 
@@ -1133,7 +1140,7 @@ class MissionLogic(BaseLogic):
                         self.getRidOfFace()
                         break
 
-            return missionType, "risk" if  self.risk == "found" else None
+            return missionType, ("risk" if  self.risk == "found" else None)
 
 
 class RattingLogic(BaseLogic, TimeControl):
@@ -1162,6 +1169,9 @@ class RattingLogic(BaseLogic, TimeControl):
         start = time.time()
         print("warping")
         with ov.Open("all"):
+            self.jumpGate.update()
+            fromJG = self.jumpGate.status() == "found"
+
             while time.time() - start < WARP_TIMEOUT:
 
                 self.objects["enemy"].update()
@@ -1170,7 +1180,10 @@ class RattingLogic(BaseLogic, TimeControl):
 
                 self.jumpGate.update()
                 if self.jumpGate.status() == "found":
-                    break
+                    if not fromJG:
+                        break
+                else:
+                    fromJG = False;
 
                 if self.objects["stat"].get("armor") < 50:
                     break
@@ -1188,6 +1201,7 @@ class RattingLogic(BaseLogic, TimeControl):
                     return False
 
                 self.jumpGate.click()
+                time.sleep(0.2)
 
                 if not ProcessDialogBotton(self.activate, 5):
                     print("activate fail")
@@ -1299,8 +1313,10 @@ while True:
             mission.getRidOfFace()
         if ret == "loot":
             looting.execute()
-        if task == "inquisitor" or task == "scout":
+        print(task)
+        if task[0] == "inquisitor" or task[0] == "scout":
             if ratting.jumpFurther():
+                time.sleep(5)
                 continue
         if work == "rating":
             combat.retreat()
@@ -1327,6 +1343,7 @@ while True:
                 ProcessDialogBotton(dock, 60)
 
             elif objects["stat"].get("structure") < 50:
+                print("STOP")
                 break
 
 
@@ -1345,9 +1362,9 @@ while True:
             work = "mission"
 
     if work == "mission":
-        task, risk = mission.execute({"combat"})
+        (task, risk) = mission.execute({"combat"})
     elif work == "rating":
-        task, risk = ratting.execute(required_types=("inquisitor", "scout", "small"))
+        (task, risk) = ratting.execute(required_types=("inquisitor", "scout", "small"))
     print("starting ", work, task, risk )
 
         # task = ratting.execute({"scout"})
