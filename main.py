@@ -11,6 +11,8 @@ import pyautogui
 import cv2
 import statistics
 
+from pynput.keyboard import Key, Listener
+
 from PIL import Image
 from numpy import *
 import threading
@@ -111,6 +113,36 @@ class Averager:
         return summ / self.count()
 
 
+class KeyHandler(threading.Thread):
+    pressed = False
+    lock = threading.Lock()
+
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self.pressed = False
+        self.start()
+
+    def run(self) -> None:
+        with Listener(
+                on_press=KeyHandler.on_press,
+                on_release=KeyHandler.on_release) as listener:
+            listener.join()
+
+    def on_press(key):
+        with KeyHandler.lock:
+            if key == Key.shift and KeyHandler.pressed == False:
+                ScreenObject.control.acquire()
+                KeyHandler.pressed = True
+                print("Control override")
+
+    def on_release(key):
+        with KeyHandler.lock:
+            if key == Key.shift and KeyHandler.pressed == True:
+                KeyHandler.pressed = False
+                ScreenObject.control.release()
+
+# Collect events until released
+
 
 
 
@@ -158,6 +190,17 @@ class ScreenObject:
                     p = self.filter_mask[i,j]
                     s = int(p[2]) - max(p[1],p[0])
                     self.filter_mask[i, j] = (0,0,0) if s < 70 else p
+        elif filter == "white":
+            self.filter_mask = self.img.copy()
+            for i in range(self.filter_mask.shape[0]):
+                for j in range(self.filter_mask.shape[1]):
+                    p = self.filter_mask[i, j]
+                    l = 80
+                    s = not(p[2] > l and p[1] > l and p[0] > l)
+                    self.filter_mask[i, j] = (0, 0, 0) if  s else p
+
+            #cv2.imshow("mask", self.filter_mask)
+            #cv2.waitKey(0)
         elif filter is not None:
             self.filter_mask = cv2.imread(filter)
             for i in range(self.filter_mask.shape[0]):
@@ -166,8 +209,7 @@ class ScreenObject:
                     self.filter_mask[i, j] = (0,0,0) if tuple(p) != (0,255,0) else self.img[i,j]
 
 
-            #cv2.imshow("mask", self.filter_mask)
-            #cv2.waitKey(0)
+
 
 
 
@@ -605,7 +647,9 @@ class ShipStatus(threading.Thread, TimeControl):
         self.bar.update()
 
         if self.get("structure") < 1:
+            #closeAll()  # ensure no open windows
             return #no bar visible
+
         with self.lock:
             self.hp.update( self.get("shield") + self.get("armor") + self.get("structure") )
             for i,type in enumerate(self.names):
@@ -616,7 +660,11 @@ class ShipStatus(threading.Thread, TimeControl):
             persent = (90, 80)
             shieldTime = self.estimateLifetime(type="shield")
             for i, r in enumerate(self.objects["rep"] ):
-                r.set("active" if (self.get("armor") < persent[i] or shieldTime < 10)else "inactive")
+                if self.get("armor") < persent[i] or shieldTime < 10:
+                    r.set("active")
+                elif self.estimateLifetime() > 500:
+                    r.set("inactive")
+
 
 
     def get(self, name):
@@ -652,17 +700,17 @@ class BaseLogic:
     def execute(self):
         return self
 
-
+close = ScreenObject("close.png", con=0.95)
 def closeAll():
-    print("error")
-    close = ScreenObject("close.png", con=0.95)
-    while True:
-        close.update()
-        if close.status() == "found":
-            close.click()
-            time.sleep(0.5)
-        else:
-            break
+    for i in range(5):
+        with ScreenObject.control:
+            close.update()
+            if close.status() == "found":
+                with ScreenObject.control:
+                    close.click()
+                time.sleep(0.5)
+            else:
+                break
 
 
 def ProcessDialogBotton(btn, timeout=100, pop=True):
@@ -711,8 +759,6 @@ class LootingLogic(BaseLogic):
         enemy = self.objects["enemy"]
         ab = self.objects["ab"]
 
-        ab.set("active")
-
         ov.Open(mode="loot")
 
         while True:
@@ -733,9 +779,12 @@ class LootingLogic(BaseLogic):
                     closeAll()
                     continue
 
-            if not ProcessDialogBotton(self.loot_all, 500):
+            ab.set("active")
+
+            if not ProcessDialogBotton(self.loot_all, 120):
                 print("loot_all btn not found")
                 closeAll()
+                break
 
             enemy.update()
             if enemy.status() == "found":
@@ -743,8 +792,7 @@ class LootingLogic(BaseLogic):
                 return
 
         ov.Close()
-        if ab.status() == "found" and ab.State() == "active":
-            ab.set("inactive")
+        ab.set("inactive")
 
 class TargetLogic(threading.Thread, TimeControl):
 
@@ -756,8 +804,8 @@ class TargetLogic(threading.Thread, TimeControl):
         self.autolock = (ScreenObject("target.bmp", con=0.7, ao=lock_ao), \
                         ScreenObject("trgt_2.png", con=0.7, ao=lock_ao))
         trgt_ao=(920, 100, -900, -ScreenObject.WINDOW_H + 30)
-        self.npc = {"frigate":ScreenIndicator("frigate.png",mask=("frigate_mask.png",), key=((120,110,100),) ,filter="red", con=0.98, ao=trgt_ao),
-                    "destr":ScreenIndicator("destr.png",mask=("destr_mask.png",), key=((120,110,100),) ,filter="red", con=0.98, ao=trgt_ao),}
+        self.npc = {"frigate":ScreenIndicator("frigate.png",mask=("frigate_mask.png",), key=((120,110,100),) ,filter="red", con=0.97, ao=trgt_ao),
+                    "destr":ScreenIndicator("destr.png",mask=("destr_mask.png",), key=((120,110,100),) ,filter="red", con=0.97, ao=trgt_ao),}
                     #"destr":ScreenObject("npc_destr.png", con=0.7, static=False, ao=trgt_ao),}
                     #"cruiser":ScreenObject("npc_cruiser.png", static=False)}
         self.focus_fire = ScreenObject("focus_fire.png", static=False)
@@ -779,6 +827,8 @@ class TargetLogic(threading.Thread, TimeControl):
     def run(self) -> None:
         update_target_cd = 0
         while True:
+            self.wait(1)
+
             if self.active == False:
                 continue
 
@@ -788,39 +838,53 @@ class TargetLogic(threading.Thread, TimeControl):
                     lock.click()
                     break
 
-            #continue
 
-            trgt = None
-            t = None
+
             for t in self.npc:
+                found = False
                 while True:
                     ScreenObject.update(self.npc[t])
-                    if self.npc[t].status() == "found":
-                        update_target_cd = 5
-                        self.npc[t].update()
-                        trgt = self.npc[t]
-                        #debug_show(trgt.reg, col=(255,0,0))
-                    elif self.npc[t].reg != ():
-                        if  update_target_cd >= 0:
-                            update_target_cd -= 1
-                            trgt = self.npc[t]
+                    if self.npc[t] == self.focused:
+                        if self.npc[t].status() == "found":
+                            update_target_cd = 5
+                            self.focused = self.npc[t]
                         else:
+                            update_target_cd -= 1
+
+                        found = update_target_cd > 0
+
+                    elif self.npc[t].status() == "found":
+                        if update_target_cd <= 0 or not self.focused:
+                            self.focused = self.npc[t]
+                            update_target_cd = 5
+                        else:
+                            ScreenObject.update(self.focused)
+                            update_target_cd -= 1
+                        found = True
+
+                    elif self.npc[t].reg != ():
                             self.npc[t].reset()
                             continue
                     break
-                if trgt:
+
+                if found:
                     break
 
-            if trgt and trgt.status() == "found" and trgt.getValue() < 0.4:
+
+            if self.focused:
+                self.focused.update()
+                if self.focused.getValue() < 0.4 and self.focused.status() == "found":
+                    print("targeting ", t)
                     with ScreenObject.control:
-                        print("targeting ", t)
-                        trgt.click()
+                        self.focused.click()
                         ProcessDialogBotton(self.focus_fire, 2)
                     if "nosf" in self.objects:
                         self.objects["nosf"].set("inactive")
-                    self.focused = trgt.reg
+                    if "web" in self.objects:
+                        self.objects["web"].set("inactive")
 
-            self.wait(1)
+
+
 
 
 
@@ -837,6 +901,7 @@ class BaseCombat(BaseLogic, TimeControl):
 
         self.nosf = None
         self.hrd = None
+        self.plate = None
 
     def retreat(self):
         print("retreat")
@@ -863,19 +928,21 @@ class BaseCombat(BaseLogic, TimeControl):
     def onCombat(self):
         stat = self.stat
 
-
-
         lifetime = stat.estimateLifetime()
         ar_lifetime = stat.estimateLifetime(type="armor")
         print("lifetime", lifetime, ar_lifetime)
 
-        if ar_lifetime < 25 or lifetime < 40:
+        if ar_lifetime < 25 or lifetime < 60:
             print("bad prediction lifetime", lifetime)
             print(stat.hp.list)
+            if self.plate:
+                self.plate.set("active")
             return "retreat"
 
         if stat.get("armor") < 20 and lifetime < 100:
             print("low armor", stat.get("armor"))
+            if self.plate:
+                self.plate.set("active")
             return "retreat"
 
         # print("wep:",objects["web"].status(), objects["web"].State(), objects["web"].getValue())
@@ -933,6 +1000,7 @@ class BaseCombat(BaseLogic, TimeControl):
         with self.targeting:
             if True:
                 while True:
+
                     objects["enemy"].update()
                     enemy = objects["enemy"].status() == "found"
 
@@ -982,28 +1050,35 @@ class MissionLogic(BaseLogic):
                      ScreenObject("dialog3.png", static=False),)
         self.risk = ScreenObject("risk.png", static=False, con=0.7)
         self.filter = ScreenObject("filter.png")
-        self.high_sec = ScreenIndicator("high_sec.png", ("high_sec_mask.png",), key=((228,200,134),), con=0.7)
+        self.high_sec = ScreenIndicator("high_sec.png", ("high_sec_mask.png",), key=((228,200,134),), filter="white", con=0.99)
 
     def filterType(self, type):
         print("select", type)
         self.filter.update()
         if self.filter.status() == "found":
             self.filter.click()
-            time.sleep(2)
+            time.sleep(5)
 
-            self.high_sec.reset()
-            self.high_sec.update()
-            if self.high_sec.status() == "found":
-                val = self.high_sec.getValue()
-                if (type == "high" and val <= 0.01) or \
-                    (type == "low" and val > 0.01):
-                    self.high_sec.click(mask=True)
-                    time.sleep(1)
-            else:
-                print("err: high sec not found")
+            for i in range(2):
+                self.high_sec.update()
+                if self.high_sec.status() == "found":
+                    val = self.high_sec.getValue()
+                    if (type == "high" and val <= 0.01) or \
+                        (type == "low" and val > 0.01):
+                        self.high_sec.click(mask=True)
+                        self.high_sec.update()
+                        if(val == self.high_sec.getValue()):
+                            print("err: high sec doesnt change")
+                            self.high_sec.reset()
+                            continue
+                else:
+                    self.high_sec.reset()
+                    print("err: high sec not found")
+                    continue
+                break
 
             self.filter.click()
-            time.sleep(1.0)
+            time.sleep(5)
         else:
             print("err: filter btn not found")
 
@@ -1042,7 +1117,7 @@ class MissionLogic(BaseLogic):
         for i in range(1, 5):  # check no enemy left
             enemy.update()
             if enemy.status() == "found":
-                return
+                return "none", None
             time.sleep(1)
 
         print("finish mission")
@@ -1115,7 +1190,7 @@ class MissionLogic(BaseLogic):
 
             self.getRidOfFace()
 
-            print("mission comuting")
+            print("mission comuting: ", mission, "risk ", self.risk.status())
 
             checkFaces = True
             while True:
@@ -1290,10 +1365,12 @@ class StabberCombat(BaseCombat):
 
         self.cmbt_mod = {"web": ModuleBotton("web_btn_2.png", "web_mask_2.png")}
 
-        self.hrd = None #ModuleBotton("hrd_btn_2.png", "hrd_mask_2.png")
+        self.hrd = None#ModuleBotton("hrd_btn_2.png", "hrd_mask_2.png")
+        self.plate = ModuleBotton("plate.png", "plate_mask.png")
     # In[4]:
 
 
+keyHandler = KeyHandler()
 objects = {}
 objects["enemy"] = ScreenObject("enemy.bmp", static=False)
 objects["OV"] = Overview()
@@ -1309,15 +1386,19 @@ risk = None
 while True:
     ret = combat.execute()
     if ret != "retreat":
+
         if work == "mission":
             mission.getRidOfFace()
-        if ret == "loot":
-            looting.execute()
-        print(task)
+
         if task[0] == "inquisitor" or task[0] == "scout":
             if ratting.jumpFurther():
                 time.sleep(5)
                 continue
+
+        if ret == "loot":
+            looting.execute()
+        print(task)
+
         if work == "rating":
             combat.retreat()
             time.sleep(20)
