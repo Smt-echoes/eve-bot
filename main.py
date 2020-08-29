@@ -786,13 +786,13 @@ class LootingLogic(BaseLogic):
                 closeAll()
                 break
 
-            enemy.update()
-            if enemy.status() == "found":
+            if self.objects["combat"].isEnemy():
                 ov.Close()
-                return
+                return "enemy"
 
         ov.Close()
         ab.set("inactive")
+        return "ok"
 
 class TargetLogic(threading.Thread, TimeControl):
 
@@ -801,8 +801,7 @@ class TargetLogic(threading.Thread, TimeControl):
         TimeControl.__init__(self)
         self.objects = obj
         lock_ao = (880, 390, -880,-390)
-        self.autolock = (ScreenObject("target.bmp", con=0.7, ao=lock_ao), \
-                        ScreenObject("trgt_2.png", con=0.7, ao=lock_ao))
+        self.autolock = (ScreenObject("target.bmp", con=0.8, ao=lock_ao), )
         trgt_ao=(920, 100, -900, -ScreenObject.WINDOW_H + 30)
         self.npc = {"frigate":ScreenIndicator("frigate.png",mask=("frigate_mask.png",), key=((120,110,100),) ,filter="red", con=0.97, ao=trgt_ao),
                     "destr":ScreenIndicator("destr.png",mask=("destr_mask.png",), key=((120,110,100),) ,filter="red", con=0.97, ao=trgt_ao),}
@@ -849,7 +848,8 @@ class TargetLogic(threading.Thread, TimeControl):
                             update_target_cd = 5
                             self.focused = self.npc[t]
                         else:
-                            update_target_cd -= 1
+                            self.focused.update()
+                            update_target_cd -= 1 if self.focused.getValue() < 0.4 else 0
 
                         found = update_target_cd > 0
 
@@ -993,6 +993,11 @@ class BaseCombat(BaseLogic, TimeControl):
 
         return
 
+    def isEnemy(self):
+        objects["enemy"].update()
+        return objects["enemy"].status() == "found" or \
+               self.stat.estimateLifetime() < 999
+
     def execute(self):
         outOfCombatTimer = 10
         print("combat logic")
@@ -1001,8 +1006,7 @@ class BaseCombat(BaseLogic, TimeControl):
             if True:
                 while True:
 
-                    objects["enemy"].update()
-                    enemy = objects["enemy"].status() == "found"
+                    enemy = self.isEnemy()
 
                     if self.onCombat() == "retreat":
                         if self.retreat():
@@ -1201,18 +1205,7 @@ class MissionLogic(BaseLogic):
                         continue
 
                 if missionType == "combat":
-                    enemy.update()
-                    if enemy.status() == "found":
-                        break
-                elif missionType == "delivery":
-
-                    self.getRidOfFace()
-
-                    self.delivery_finish.update()
-                    if self.delivery_finish.status() == "found":
-                        ProcessDialogBotton(self.delivery_finish, 5)
-
-                        self.getRidOfFace()
+                    if self.objects["combat"].isEnemy():
                         break
 
             return missionType, ("risk" if  self.risk == "found" else None)
@@ -1375,7 +1368,8 @@ objects = {}
 objects["enemy"] = ScreenObject("enemy.bmp", static=False)
 objects["OV"] = Overview()
 objects["stat"] = ShipStatus(objects)
-combat = StabberCombat(objects)
+objects["combat"] = StabberCombat(objects)
+combat = objects["combat"]
 looting = LootingLogic(objects)
 mission = MissionLogic(objects)
 ratting = RattingLogic(objects)
@@ -1396,7 +1390,9 @@ while True:
                 continue
 
         if ret == "loot":
-            looting.execute()
+            if looting.execute() == "enemy":
+                continue
+
         print(task)
 
         if work == "rating":
